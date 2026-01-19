@@ -63,7 +63,7 @@ class GameConfig:
     fps: int = 60
     
     # 테스트 모드 설정
-    test_mode: bool = False  # True면 벽돌 하나만 남김
+    test_mode: bool =  False # True면 벽돌 하나만 남김
 
 
 @dataclass
@@ -160,6 +160,42 @@ class Paddle:
         """충돌 감지용 사각형 (기울기 무시한 기본 사각형)"""
         return pygame.Rect(self.x, self.y, self.width, self.height)
     
+    def point_to_local(self, px: float, py: float) -> Tuple[float, float]:
+        """
+        월드 좌표를 패들의 로컬 좌표계로 변환 (역회전)
+        로컬 좌표계에서 패들은 원점에 수평으로 놓여있음
+        """
+        cx, cy = self.get_center()
+        angle_rad = math.radians(-self.angle)  # 역회전
+        
+        # 중심 기준으로 이동
+        dx = px - cx
+        dy = py - cy
+        
+        # 역회전 적용
+        cos_a = math.cos(angle_rad)
+        sin_a = math.sin(angle_rad)
+        local_x = dx * cos_a - dy * sin_a
+        local_y = dx * sin_a + dy * cos_a
+        
+        return (local_x, local_y)
+    
+    def get_surface_normal_at(self, px: float, py: float) -> Tuple[float, float]:
+        """
+        패들 표면의 법선 벡터 반환 (기울기 적용)
+        """
+        angle_rad = math.radians(self.angle)
+        # 기본 법선은 위쪽 (0, -1), 회전 적용
+        nx = math.sin(angle_rad)
+        ny = -math.cos(angle_rad)
+        return (nx, ny)
+    
+    def get_top_line(self) -> Tuple[Tuple[float, float], Tuple[float, float]]:
+        """회전된 패들의 윗면 선분 반환 (왼쪽점, 오른쪽점)"""
+        corners = self.get_rotated_corners()
+        # corners: 좌상, 우상, 우하, 좌하
+        return (corners[0], corners[1])
+    
     def get_rotated_corners(self) -> List[Tuple[float, float]]:
         """회전된 패들의 네 꼭지점 좌표 반환"""
         cx, cy = self.get_center()
@@ -242,42 +278,106 @@ class Ball:
             self.active = False
     
     def check_paddle_collision(self, paddle: Paddle) -> bool:
-        """패들과 충돌 체크 및 반사 처리"""
+        """
+        패들과 충돌 체크 및 반사 처리
+        회전된 패들과의 정확한 충돌 판정 + 물리 기반 반사 (입사각 = 반사각)
+        """
         if not self.active:
             return False
         
-        # 회전된 패들과의 충돌 체크 (단순화: 기본 사각형으로 체크)
-        paddle_rect = paddle.get_collision_rect()
+        # 공이 아래로 이동 중일 때만 체크 (위로 튕긴 직후 재충돌 방지)
+        if self.vy <= 0:
+            return False
         
-        # 공의 바운딩 박스
-        ball_rect = pygame.Rect(
-            self.x - self.radius, 
-            self.y - self.radius,
-            self.radius * 2, 
-            self.radius * 2
-        )
+        # 방법: 공의 좌표를 패들의 로컬 좌표계로 변환하여 충돌 체크
+        # 로컬 좌표계에서 패들은 수평 상태
+        local_x, local_y = paddle.point_to_local(self.x, self.y)
         
-        if ball_rect.colliderect(paddle_rect) and self.vy > 0:
-            # 충돌 위치에 따른 반사 각도 계산
-            paddle_center = paddle.x + paddle.width / 2
-            hit_pos = (self.x - paddle_center) / (paddle.width / 2)  # -1 ~ 1
+        # 로컬 좌표계에서의 패들 반너비/반높이
+        half_w = paddle.width / 2
+        half_h = paddle.height / 2
+        
+        # 로컬 좌표계에서 사각형-원 충돌 체크
+        # 사각형의 가장 가까운 점 찾기
+        closest_x = max(-half_w, min(local_x, half_w))
+        closest_y = max(-half_h, min(local_y, half_h))
+        
+        # 거리 계산
+        dist_x = local_x - closest_x
+        dist_y = local_y - closest_y
+        distance = math.sqrt(dist_x * dist_x + dist_y * dist_y)
+        
+        if distance < self.radius:
+            # 충돌 발생!
             
-            # 패들 기울기를 반사 각도에 반영
-            # 기울기 각도(도)를 라디안으로 변환하여 반사 각도에 추가
+            # === 물리 기반 반사 (입사각 = 반사각) ===
+            # 패들 표면의 법선 벡터 (기울기 적용)
+            # 기본 법선은 (0, -1) 위쪽, 패들 기울기만큼 회전
             paddle_angle_rad = math.radians(paddle.angle)
             
-            # 기본 반사 각도 (-75도 ~ -105도, 즉 위쪽 방향)
-            base_angle = -math.pi/2 + hit_pos * math.pi/3
+            # 충돌 면 판단 (윗면, 옆면 등)
+            # local_y가 -half_h에 가까우면 윗면 충돌
+            if closest_y <= -half_h + 2:  # 윗면 충돌
+                # 윗면 법선 (회전 적용)
+                nx = math.sin(paddle_angle_rad)
+                ny = -math.cos(paddle_angle_rad)
+            elif closest_x <= -half_w + 1:  # 왼쪽 면
+                nx = -math.cos(paddle_angle_rad)
+                ny = -math.sin(paddle_angle_rad)
+            elif closest_x >= half_w - 1:  # 오른쪽 면
+                nx = math.cos(paddle_angle_rad)
+                ny = math.sin(paddle_angle_rad)
+            else:  # 기본값: 윗면으로 처리
+                nx = math.sin(paddle_angle_rad)
+                ny = -math.cos(paddle_angle_rad)
             
-            # 패들 기울기 영향 추가 (기울기의 2배 정도 영향)
-            final_angle = base_angle + paddle_angle_rad * 2
+            # 법선 벡터 정규화 (이미 단위 벡터이지만 확실히)
+            n_len = math.sqrt(nx * nx + ny * ny)
+            if n_len > 0:
+                nx /= n_len
+                ny /= n_len
             
-            # 속도 유지하면서 방향 변경
-            self.vx = self.speed * math.cos(final_angle)
-            self.vy = self.speed * math.sin(final_angle)
+            # 입사 속도 벡터
+            vx, vy = self.vx, self.vy
             
-            # 패들 위로 공 위치 조정
-            self.y = paddle.y - self.radius - 1
+            # 반사 공식: v' = v - 2(v·n)n
+            # v·n (내적)
+            dot = vx * nx + vy * ny
+            
+            # 반사 벡터 계산
+            reflect_vx = vx - 2 * dot * nx
+            reflect_vy = vy - 2 * dot * ny
+            
+            # 속도 크기 유지 (에너지 보존)
+            reflect_speed = math.sqrt(reflect_vx * reflect_vx + reflect_vy * reflect_vy)
+            if reflect_speed > 0:
+                reflect_vx = reflect_vx / reflect_speed * self.speed
+                reflect_vy = reflect_vy / reflect_speed * self.speed
+            
+            # 반사 후 공이 아래로 가는 것 방지 (최소한 위쪽 성분 보장)
+            if reflect_vy > -0.5:
+                reflect_vy = -abs(reflect_vy) - 0.5
+                # 속도 크기 재조정
+                reflect_speed = math.sqrt(reflect_vx * reflect_vx + reflect_vy * reflect_vy)
+                if reflect_speed > 0:
+                    reflect_vx = reflect_vx / reflect_speed * self.speed
+                    reflect_vy = reflect_vy / reflect_speed * self.speed
+            
+            self.vx = reflect_vx
+            self.vy = reflect_vy
+            
+            # 충돌 후 공을 패들 밖으로 밀어내기
+            cx, cy = paddle.get_center()
+            
+            # local_x 위치를 월드 좌표로 변환하여 충돌 지점 계산
+            cos_a = math.cos(paddle_angle_rad)
+            sin_a = math.sin(paddle_angle_rad)
+            world_hit_x = closest_x * cos_a - (-half_h) * sin_a + cx
+            world_hit_y = closest_x * sin_a + (-half_h) * cos_a + cy
+            
+            # 공을 패들 표면 위로 이동 (법선 방향으로)
+            self.x = world_hit_x + nx * (self.radius + 2)
+            self.y = world_hit_y + ny * (self.radius + 2)
             
             return True
         
