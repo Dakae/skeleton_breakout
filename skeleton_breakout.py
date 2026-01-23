@@ -236,19 +236,19 @@ class SkeletonBreakoutGame:
         self.height = height
         self.camera_id = camera_id
         
-        # 게임 설정
+        # 게임 설정 (640x480 해상도에 맞춤)
         self.config = GameConfig(
             screen_width=width,
             screen_height=height,
             brick_rows=4,
             brick_cols=8,
-            brick_width=85,
-            brick_height=25,
+            brick_width=70,    # 해상도에 맞게 조정
+            brick_height=22,
             brick_padding=5,
-            brick_offset_top=50,
-            brick_offset_left=40,
-            ball_radius=10,
-            ball_speed=6.0,
+            brick_offset_top=40,
+            brick_offset_left=20,  # 중앙 정렬
+            ball_radius=8,
+            ball_speed=5.0,
             ball_color=(0, 255, 255),  # 노란색 (웹캠 배경에서 잘 보이도록)
             test_mode=False
         )
@@ -280,6 +280,16 @@ class SkeletonBreakoutGame:
         # 충돌 쿨다운 (같은 선분에 연속 충돌 방지)
         self.collision_cooldown = 0
         
+        # FPS 표시 관련
+        self.show_fps = False
+        self.fps_history: List[float] = []
+        self.last_frame_time = 0
+        
+        # 성능 최적화: 스켈레톤 추적 주기 (N프레임마다 추적)
+        self.skeleton_update_interval = 2  # 2프레임마다 추적
+        self.frame_count = 0
+        self.last_skeleton_data: Optional[SkeletonData] = None
+        
     def initialize(self):
         """게임 초기화"""
         # Pygame 초기화
@@ -294,8 +304,8 @@ class SkeletonBreakoutGame:
             print("카메라를 열 수 없습니다!")
             return False
         
-        # 스켈레톤 트래커 초기화 (손만 사용하지만, 포즈는 유지)
-        self.tracker = create_tracker(enable_pose=True, enable_hands=True)
+        # 스켈레톤 트래커 초기화 (손만 사용, 포즈는 비활성화하여 성능 향상)
+        self.tracker = create_tracker(enable_pose=False, enable_hands=True)
         
         # 게임 오브젝트 생성
         self._create_bricks()
@@ -478,6 +488,18 @@ class SkeletonBreakoutGame:
         score_text = font.render(f"Score: {self.score}", True, (255, 255, 255))
         self.screen.blit(score_text, (10, 10))
         
+        # FPS 표시 (F키로 토글)
+        if self.show_fps:
+            avg_fps = sum(self.fps_history) / len(self.fps_history) if self.fps_history else 0
+            fps_color = (0, 255, 0) if avg_fps >= 30 else (255, 255, 0) if avg_fps >= 20 else (255, 0, 0)
+            fps_font = pygame.font.Font(None, 28)
+            fps_text = fps_font.render(f"FPS: {avg_fps:.1f}", True, fps_color)
+            
+            fps_bg = pygame.Surface((90, 25), pygame.SRCALPHA)
+            fps_bg.fill((0, 0, 0, 180))
+            self.screen.blit(fps_bg, (5, 50))
+            self.screen.blit(fps_text, (10, 52))
+        
         # 남은 생명
         lives_text = font.render(f"Lives: {self.lives}", True, (255, 255, 255))
         lives_bg = pygame.Surface((100, 40), pygame.SRCALPHA)
@@ -543,7 +565,7 @@ class SkeletonBreakoutGame:
         self.running = True
         print("스켈레톤 벽돌깨기 시작!")
         print("손을 카메라에 보여주면 손의 선이 공을 튕기는 막대가 됩니다.")
-        print("조작: R - 재시작, ESC - 종료")
+        print("조작: R - 재시작, F - FPS 표시 토글, ESC - 종료")
         
         while self.running:
             # 이벤트 처리
@@ -555,6 +577,9 @@ class SkeletonBreakoutGame:
                         self.running = False
                     elif event.key == pygame.K_r:
                         self.reset()
+                    elif event.key == pygame.K_f:
+                        self.show_fps = not self.show_fps
+                        print(f"FPS 표시: {'ON' if self.show_fps else 'OFF'}")
             
             # 카메라 프레임 읽기
             ret, frame = self.camera.read()
@@ -568,11 +593,16 @@ class SkeletonBreakoutGame:
             if frame.shape[1] != self.width or frame.shape[0] != self.height:
                 frame = cv2.resize(frame, (self.width, self.height))
             
-            # 스켈레톤 처리
-            skeleton_data = self.process_skeleton(frame)
-            
-            # 손 선분 추출
-            self.current_hand_segments = self.extract_hand_segments(skeleton_data)
+            # 스켈레톤 처리 (N프레임마다 추적하여 성능 최적화)
+            self.frame_count += 1
+            if self.frame_count >= self.skeleton_update_interval or self.last_skeleton_data is None:
+                self.frame_count = 0
+                skeleton_data = self.process_skeleton(frame)
+                self.last_skeleton_data = skeleton_data
+                # 손 선분 추출
+                self.current_hand_segments = self.extract_hand_segments(skeleton_data)
+            else:
+                skeleton_data = self.last_skeleton_data
             
             # 게임 업데이트
             self.update()
@@ -580,8 +610,14 @@ class SkeletonBreakoutGame:
             # 그리기
             self.draw(frame, skeleton_data)
             
-            # FPS 제한
+            # FPS 제한 및 계산
             self.clock.tick(self.config.fps)
+            
+            # FPS 계산 (이동 평균)
+            current_fps = self.clock.get_fps()
+            self.fps_history.append(current_fps)
+            if len(self.fps_history) > 30:  # 최근 30프레임 평균
+                self.fps_history.pop(0)
         
         self.cleanup()
     
@@ -598,7 +634,7 @@ class SkeletonBreakoutGame:
 if __name__ == "__main__":
     game = SkeletonBreakoutGame(
         camera_id=0,
-        width=800,
-        height=600
+        width=640,   # 성능 최적화: 해상도 낮춤
+        height=480
     )
     game.run()
