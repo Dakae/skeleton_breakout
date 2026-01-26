@@ -2,6 +2,8 @@
 
 손 인식 기반 벽돌깨기 게임입니다. 웹캠으로 손을 인식하여 손의 골격 선분으로 공을 튕겨 벽돌을 깨는 게임입니다.
 
+ppt: https://tongdongyangac-my.sharepoint.com/:p:/g/personal/dakae2002_m365_dongyang_ac_kr/IQAUCSY29Io9S7sADNqT5SAkAUtuHjz5ws64rmS1fBRdoFo?e=ZVs481
+
 ![Main Menu](./resources/skeleton_breakout_mainmenu.png)
 
 ## 주요 기능
